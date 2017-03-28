@@ -1,26 +1,5 @@
 /* 
-  FSWebServer - Example WebServer with SPIFFS backend for esp8266
-  Copyright (c) 2015 Hristo Gochkov. All rights reserved.
-  This file is part of the ESP8266WebServer library for Arduino environment.
- 
-  This library is free software; you can redistribute it and/or
-  modify it under the terms of the GNU Lesser General Public
-  License as published by the Free Software Foundation; either
-  version 2.1 of the License, or (at your option) any later version.
-  This library is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-  Lesser General Public License for more details.
-  You should have received a copy of the GNU Lesser General Public
-  License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
   
-  upload the contents of the data folder with MkSPIFFS Tool ("ESP8266 Sketch Data Upload" in Tools menu in Arduino IDE)
-  or you can upload the contents of a folder if you CD in that folder and run the following command:
-  for file in `ls -A1`; do curl -F "file=@$PWD/$file" esp8266fs.local/edit; done
-  
-  access the sample web page at http://esp8266fs.local
-  edit the page by going to http://esp8266fs.local/edit
 */
 //#define MY_DEBUG
 #define DBG_OUTPUT_PORT Serial
@@ -80,11 +59,11 @@
 // Set inclusion mode duration (in seconds)
 #define MY_INCLUSION_MODE_DURATION 60
 // Digital pin used for inclusion mode button
-#define MY_INCLUSION_MODE_BUTTON_PIN  D4
+#define MY_INCLUSION_MODE_BUTTON_PIN  2
 #define MY_DEFAULT_LED_BLINK_PERIOD 100
-#define MY_DEFAULT_ERR_LED_PIN D1  // Error led 
-#define MY_DEFAULT_RX_LED_PIN  D2  // Receive led pin
-#define MY_DEFAULT_TX_LED_PIN  D3  // the PCB, on board LED
+#define MY_DEFAULT_ERR_LED_PIN 12  // Error led 
+#define MY_DEFAULT_RX_LED_PIN  13  // Receive led pin
+#define MY_DEFAULT_TX_LED_PIN  15  // the PCB, on board LED
 
 #define RELAY_ON "on"
 #define RELAY_OFF "off"
