@@ -8,6 +8,11 @@ String getAuxState() {
   return airState;
 }
 
+int getForecast() {
+  DBG_OUTPUT_PORT.println("DEBUG:getHumidity");
+  return forecast;
+}
+
 String getHumidity() {
   DBG_OUTPUT_PORT.println("DEBUG:getHumidity");
   return humidity;
@@ -30,6 +35,11 @@ String getOutsideTemp() {
 String getpointTemp() {
   DBG_OUTPUT_PORT.println("DEBUG:getpointTemp");
   return setpoint;
+}
+
+String getPressure() {
+  DBG_OUTPUT_PORT.println("DEBUG:getPressure");
+  return pressure;
 }
 
 String getPumpState() {
@@ -68,6 +78,12 @@ void setAuxState(String putVal, bool publish) {
   DBG_OUTPUT_PORT.println(auxState);
 }
 
+void setForecast(int putVal, bool publish) {
+  forecast = putVal;
+  DBG_OUTPUT_PORT.print("DEBUG:setForcast: ");
+  DBG_OUTPUT_PORT.println(forecast);
+}
+
 void setHumidity(String putVal, bool publish) {
   humidity = putVal;
   DBG_OUTPUT_PORT.print("DEBUG:setHumidity: ");
@@ -99,6 +115,12 @@ void setPowerState(String putVal, bool publish) {
   if (publish == true) sendHotTubCommand("power", putVal);
   DBG_OUTPUT_PORT.print("DEBUG:powerButtonPressed: ");
   DBG_OUTPUT_PORT.println(putVal);
+}
+
+void setPressure(String putVal, bool publish) {
+  pressure = putVal;
+  DBG_OUTPUT_PORT.print("DEBUG:setPressure: ");
+  DBG_OUTPUT_PORT.println(pressure);
 }
 
 void setPumpState(String putVal, bool publish) {

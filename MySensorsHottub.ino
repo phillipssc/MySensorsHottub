@@ -9,8 +9,9 @@
 #define CHILD_ID_LIGHT 4
 #define CHILD_ID_AUX 6
 #define CHILD_ID_AIR 7
-#define CHILD_ID_HVAC 8
 #define CHILD_ID_TRIGGER 9
+#define CHILD_ID_HVAC 12
+#define CHILD_ID_PRESSURE 14
 
 #define LONG_WAIT 500
 #define SHORT_WAIT 50
@@ -39,10 +40,8 @@
 //CALB [194 204 218] calibration factor
 
 #define MY_GATEWAY_ESP8266
-//#define MY_ESP8266_SSID "***REMOVED***"
-//#define MY_ESP8266_PASSWORD "***REMOVED***"
-#define MY_ESP8266_SSID "***REMOVED***"
-#define MY_ESP8266_PASSWORD "***REMOVED***"
+#define MY_ESP8266_SSID "**************"
+#define MY_ESP8266_PASSWORD "*******************"
 // How many clients should be able to connect to this gateway (default 1)
 #define MY_GATEWAY_MAX_CLIENTS 2
 // The port to keep open on node server mode 
@@ -59,14 +58,27 @@
 // Set inclusion mode duration (in seconds)
 #define MY_INCLUSION_MODE_DURATION 60
 // Digital pin used for inclusion mode button
-#define MY_INCLUSION_MODE_BUTTON_PIN  2
+#define MY_INCLUSION_MODE_BUTTON_PIN  D6
 #define MY_DEFAULT_LED_BLINK_PERIOD 100
-#define MY_DEFAULT_ERR_LED_PIN 12  // Error led 
-#define MY_DEFAULT_RX_LED_PIN  13  // Receive led pin
-#define MY_DEFAULT_TX_LED_PIN  15  // the PCB, on board LED
+#define MY_DEFAULT_ERR_LED_PIN D0  // Error led 
+#define MY_DEFAULT_RX_LED_PIN  D1  // Receive led pin
+#define MY_DEFAULT_TX_LED_PIN  D2  // the PCB, on board LED
+
+#define NETWORK_CONNECTED_PIN 22
+#define CONTROLLER_CONNECTED_PIN 21
+#define MALFUNCTION_INDICATOR D0
 
 #define RELAY_ON "on"
 #define RELAY_OFF "off"
+
+#define BME_SCK D4
+#define BME_CS D3
+#define BME_I2C_PORT 0x76
+#define SEALEVELPRESSURE_HPA (1013.25)
+
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
 
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
@@ -93,7 +105,9 @@ String lightState = "off";
 String currentTime = "00:00:00";
 String htStatus = "OK";
 String humidity = "40";
+String pressure = "32";
 String wl_status = "WL_DISCONNECTED";
+int    forecast = -1;
 
 String l_powerState = "";
 String l_waterTemp = "";
@@ -106,9 +120,28 @@ String l_lightState = "";
 String l_currentTime = "";
 String l_htStatus = "";
 String l_humidity = "";
+String l_pressure = "";
 String l_wl_status = "WL_DISCONNECTED";
+int    l_forecast = -1;
+
+const int LAST_SAMPLES_COUNT = 5;
+float lastPressureSamples[LAST_SAMPLES_COUNT];
+#define CONVERSION_FACTOR (1.0/10.0)
+const float ALTITUDE = 23; // <-- adapt this value to your location's altitude (in m). Use your smartphone GPS to get an accurate value!
+int minuteCount = 0;
+bool firstRound = true;
+// average value is used in forecast algorithm.
+float pressureAvg;
+// average after 2 hours is used as reference value for the next iteration.
+float pressureAvg2;
+
+float dP_dt;
+boolean metric;
 
 String command="";
+
+unsigned long previousMillis = 0;        // will store last temp was read
+const long interval = 60*1000;              // interval at which to read sensor
 
 ESP8266WebServer server(80);
 //holds the current upload
@@ -120,33 +153,36 @@ MyMessage msgTemp(CHILD_ID_HVAC, V_TEMP);
 MyMessage msgStatus(CHILD_ID_HVAC, V_VAR1);
 MyMessage msgOutsideTemp(CHILD_ID_OUTSIDETEMP, V_TEMP);
 MyMessage msgHumidity(CHILD_ID_HUMIDITY, V_HUM);
+MyMessage msgPressure(CHILD_ID_PRESSURE, V_PRESSURE);
+MyMessage msgForecast(CHILD_ID_PRESSURE, V_FORECAST);
 MyMessage msgLight(CHILD_ID_LIGHT, V_STATUS);
 MyMessage msgAir(CHILD_ID_AIR, V_STATUS);
 MyMessage msgAux(CHILD_ID_AUX, V_STATUS);
 MyMessage msgErrorTrigger(CHILD_ID_TRIGGER, V_STATUS);
+
+Adafruit_BME280 bme; // I2C
 
 void setup(void){
   //DBG_OUTPUT_PORT.begin(115200,SERIAL_8N1,SERIAL_TX_ONLY);
   Serial.begin(115200);
   DBG_OUTPUT_PORT.print("\n");
   DBG_OUTPUT_PORT.setDebugOutput(true);
-  Serial.swap();
+  //Serial.swap();
   delay(LONG_WAIT);
   DBG_OUTPUT_PORT.print("\n");
 
-  sendHotTubCommand("network", "init");
-  delay(LONG_WAIT);
-  sendHotTubCommand("faultindicator", "false");
-  delay(LONG_WAIT);
-  sendHotTubCommand("networkindicator", "false");
-  delay(LONG_WAIT);
-  sendHotTubCommand("controllerindicator", "false");
-  delay(LONG_WAIT);
+  pinMode(NETWORK_CONNECTED_PIN, OUTPUT);
+  pinMode(CONTROLLER_CONNECTED_PIN, OUTPUT);
+  pinMode(MALFUNCTION_INDICATOR, OUTPUT);
+  digitalWrite(NETWORK_CONNECTED_PIN, LOW);
+  digitalWrite(CONTROLLER_CONNECTED_PIN, LOW);
+  digitalWrite(MALFUNCTION_INDICATOR, LOW);
+
 
   DBG_OUTPUT_PORT.println("DEBUG: Local files:");
   delay(LONG_WAIT);
   
-  SPIFFS.begin();
+  if (SPIFFS.begin())
   {
     Dir dir = SPIFFS.openDir("/");
     while (dir.next()) {    
@@ -199,6 +235,8 @@ void setup(void){
   server.on("/ntp", HTTP_PUT, httpGetNtpTime);
   server.on("/outsidetemp", HTTP_GET, httpGetOutsideTemp);
   server.on("/humidity", HTTP_GET, httpGetHumidity);
+  server.on("/pressure", HTTP_GET, httpGetPressure);
+  server.on("/forcast", HTTP_GET, httpGetForecast);
   server.on("/present", HTTP_PUT, httpSendPresentation);
   server.on("/advertise", HTTP_PUT, httpSendAdvertisement);
   server.on("/update", HTTP_PUT, httpSendUpdateAll);
@@ -206,15 +244,23 @@ void setup(void){
   server.on("/restart", HTTP_PUT, restartESP);
   server.begin();
   DBG_OUTPUT_PORT.println("DEBUG:HTTP started");  
-  delay(LONG_WAIT);
-  sendHotTubCommand("networkindicator", "true");
-  delay(LONG_WAIT);
+  digitalWrite(NETWORK_CONNECTED_PIN, HIGH);
   
   advertise();
+
+  Wire.begin(BME_CS,BME_SCK);
+  Wire.setClock(100000);
+
+  if (!bme.begin(BME_I2C_PORT)) {
+      Serial.println("Could not find a valid BME280 sensor, check wiring!");
+      //while (1);
+  }
+
 }
 
 void loop(void){
   server.handleClient();
+  gettemperature();
   if(Serial.available()) // check if the comm unit is sending a message 
   {    
     char inChar = (char)Serial.read();
@@ -225,6 +271,8 @@ void loop(void){
       if (command.startsWith("temp:")) setWaterTemp(command.substring(5),false);
       if (command.startsWith("outsidetemp:")) setOutsideTemp(command.substring(12),false);
       if (command.startsWith("humidity:")) setHumidity(command.substring(9),false);
+      if (command.startsWith("pressure:")) setPressure(command.substring(9),false);
+      if (command.startsWith("forecast:")) setForecast(command.substring(9).toInt(),false);
       if (command.startsWith("pump:")) setPumpState(command.substring(5),false);
       if (command.startsWith("aux:")) setAuxState(command.substring(4),false);
       if (command.startsWith("air:")) setAirState(command.substring(4),false);
@@ -274,6 +322,22 @@ void loop(void){
     l_humidity = humidity;
     delay(LONG_WAIT);
   }
+  if ( l_pressure != pressure) {
+    DBG_OUTPUT_PORT.println("DEBUG:Update controller pressure");
+    char arr[12];
+    pressure.toCharArray(arr, sizeof(arr));
+    send(msgPressure.set((int32_t)atol(arr)));
+    l_pressure = pressure;
+    delay(LONG_WAIT);
+  }
+  if ( l_forecast != forecast) {
+    DBG_OUTPUT_PORT.println("DEBUG:Update controller forecast");
+    //char arr[12];
+    //forecast.toCharArray(arr, sizeof(arr));
+    send(msgForecast.set(forecast));
+    l_forecast = forecast;
+    delay(LONG_WAIT);
+  }
   if ( l_lightState != lightState) {
     DBG_OUTPUT_PORT.println("DEBUG:Update controller lightState");
     send(msgLight.set(lightState == "on"));
@@ -288,7 +352,7 @@ void loop(void){
     delay(LONG_WAIT);
     DBG_OUTPUT_PORT.println("DEBUG:Update controller trigger");
     send(msgErrorTrigger.set(htStatus != "OK"));
-    sendHotTubCommand("faultindicator", htStatus != "OK"?"true":"false");
+    digitalWrite(MALFUNCTION_INDICATOR, htStatus != "OK"?HIGH:LOW);
     l_htStatus = htStatus;
     delay(LONG_WAIT);
   }
@@ -314,7 +378,7 @@ void loop(void){
   }
   wl_status = WiFi.status();
   if ( l_wl_status != wl_status) {
-    sendHotTubCommand("networkindicator", wl_status=="3"?"true":"false");
+    digitalWrite(NETWORK_CONNECTED_PIN, wl_status=="3"?HIGH:LOW);
     l_wl_status = wl_status;
   }
   if ( currentTime == "00:00:00" ) requestTime();

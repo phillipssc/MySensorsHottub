@@ -120,6 +120,14 @@ void httpGetOutsideTemp() {
   sendJSONResponse(getOutsideTemp());
 }
 
+void httpGetPressure() {
+  sendJSONResponse(getPressure());
+}
+
+void httpGetForecast() {
+  sendJSONResponse(String(getForecast()));
+}
+
 void httpSetStatus() {
   if(server.args() == 0)
     return server.send(500, "text/plain", "BAD ARGS");

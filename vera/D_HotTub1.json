@@ -167,7 +167,7 @@
                             }
                         ]
                     },
-                    "Action": "disable",
+                    "Action": "enable",
                     "Target": "heater_setpoint"
                 }
             ]

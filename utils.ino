@@ -1,3 +1,15 @@
+const char *weather[] = { "stable", "sunny", "cloudy", "unstable", "thunderstorm", "unknown" };
+enum FORECAST
+{
+  STABLE = 0,     // "Stable Weather Pattern"
+  SUNNY = 1,      // "Slowly rising Good Weather", "Clear/Sunny "
+  CLOUDY = 2,     // "Slowly falling L-Pressure ", "Cloudy/Rain "
+  UNSTABLE = 3,   // "Quickly rising H-Press",     "Not Stable"
+  THUNDERSTORM = 4, // "Quickly falling L-Press",    "Thunderstorm"
+  UNKNOWN = 5     // "Unknown (More Time needed)
+};
+
+
 //format bytes
 String formatBytes(size_t bytes){
   if (bytes < 1024){
@@ -64,6 +76,8 @@ String updateAllSensors(){
   l_currentTime = "";
   l_htStatus = "";
   l_humidity = "";
+  l_pressure = "";
+  l_forecast = -1;
   return "OK";
 }
 
@@ -92,7 +106,7 @@ void receiveTime(unsigned long epoch){
   setTime(currentTime,true);
   currentTime = String();
   updateAllSensors();
-  sendHotTubCommand("controllerindicator", "true");
+  digitalWrite(CONTROLLER_CONNECTED_PIN, HIGH);
 }  
 
 void restartESP() {
@@ -102,15 +116,16 @@ void restartESP() {
 void advertise() { 
   SSDP.setSchemaURL("description.xml");
   SSDP.setHTTPPort(80);
-  SSDP.setName("Hot_Tub");
+  SSDP.setName("HotTub");
   SSDP.setSerialNumber(ESP.getChipId());
   SSDP.setURL("index.html");
-  SSDP.setModelName("Time_Machine");
+  SSDP.setModelName("TimeMachine");
   SSDP.setModelNumber("929000996503");
   SSDP.setModelURL("http://phillips.dnsalias.com");
   SSDP.setManufacturer("Cat-8 Electronics");
   SSDP.setManufacturerURL("http://www.cat-8.com");
-  SSDP.setDeviceType("urn:schemas-upnp-org:device:HotTubController:1");
+  SSDP.setDeviceType("upnp:rootdevice");
+  //SSDP.setDeviceType("urn:schemas-upnp-org:device:HotTubController:1");
   if(SSDP.begin()){
     DBG_OUTPUT_PORT.println("DEBUG:SSDP started");
   }
@@ -120,7 +135,7 @@ void presentation()
 {
   DBG_OUTPUT_PORT.println("DEBUG:Presenting sensors...");
   // Send the sketch version information to the gateway and Controller
-  sendSketchInfo("Hot Tub Time Machine", "1.0");
+  sendSketchInfo("Hot Tub Time Machine", "1.1");
   wait(LONG_WAIT);
   // Register all sensors to gateway (they will be created as child devices)
   present(CHILD_ID_HVAC, S_HEATER); // HVAC unit
@@ -137,6 +152,9 @@ void presentation()
   wait(SHORT_WAIT);
   present(CHILD_ID_TRIGGER, S_BINARY);
   wait(SHORT_WAIT);
+  present(CHILD_ID_PRESSURE, S_BARO);
+  wait(SHORT_WAIT);
+  metric = getControllerConfig().isMetric;
 }
 
 void receive(const MyMessage &message) {
@@ -169,5 +187,195 @@ void receive(const MyMessage &message) {
   else {
     DBG_OUTPUT_PORT.println("DEBUG:incoming message unhandled.");
   }
+}
+
+void gettemperature() {
+  unsigned long currentMillis = millis();
+  if(currentMillis - previousMillis >= interval) {
+    // save the last time you read the sensor 
+    previousMillis = currentMillis;   
+    // Reading temperature for humidity takes about 250 milliseconds!
+    // Sensor readings may also be up to 2 seconds 'old' (it's a very slow sensor)
+    // Reading temperature or humidity takes about 250 milliseconds!
+    // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
+    float h = bme.readHumidity();
+    // Read temperature as Celsius (the default)
+    //float t = dht.readTemperature();
+    // Read temperature as Celsius
+    float c = bme.readTemperature();
+  
+    float p = bme.readPressure();
+    
+    char arr[12];
+    humidity = dtostrf(h, 6, 2, arr);
+    outsideTemp = dtostrf(c*9/5+32, 6, 2, arr);
+    //pressure = dtostrf(p/3386.39, 6, 2, arr);  //inHg
+    pressure = dtostrf(p/100.0F, 6, 2, arr);
+    float pressure = p/pow((1.0 - ( ALTITUDE / 44330.0 )), 5.255); // Adjust to sea level pressure using user altitude
+    forecast = sample(pressure);
+  
+    DBG_OUTPUT_PORT.print("outsidetemp:");
+    DBG_OUTPUT_PORT.println(c*9/5+32);
+    DBG_OUTPUT_PORT.print("humidity:");
+    DBG_OUTPUT_PORT.println(h);
+    DBG_OUTPUT_PORT.print("pressure:");
+    DBG_OUTPUT_PORT.println(p/3386.39);
+    DBG_OUTPUT_PORT.print("forecast:");
+    DBG_OUTPUT_PORT.println(forecast);
+  }
+}
+
+float getLastPressureSamplesAverage()
+{
+  float lastPressureSamplesAverage = 0;
+  for (int i = 0; i < LAST_SAMPLES_COUNT; i++)
+  {
+    lastPressureSamplesAverage += lastPressureSamples[i];
+  }
+  lastPressureSamplesAverage /= LAST_SAMPLES_COUNT;
+
+  return lastPressureSamplesAverage;
+}
+
+// Algorithm found here
+// http://www.freescale.com/files/sensors/doc/app_note/AN3914.pdf
+// Pressure in hPa -->  forecast done by calculating kPa/h
+int sample(float pressure)
+{
+  // Calculate the average of the last n minutes.
+  int index = minuteCount % LAST_SAMPLES_COUNT;
+  lastPressureSamples[index] = pressure;
+
+  minuteCount++;
+  if (minuteCount > 185)
+  {
+    minuteCount = 6;
+  }
+
+  if (minuteCount == 5)
+  {
+    pressureAvg = getLastPressureSamplesAverage();
+  }
+  else if (minuteCount == 35)
+  {
+    float lastPressureAvg = getLastPressureSamplesAverage();
+    float change = (lastPressureAvg - pressureAvg) * CONVERSION_FACTOR;
+    if (firstRound) // first time initial 3 hour
+    {
+      dP_dt = change * 2; // note this is for t = 0.5hour
+    }
+    else
+    {
+      dP_dt = change / 1.5; // divide by 1.5 as this is the difference in time from 0 value.
+    }
+  }
+  else if (minuteCount == 65)
+  {
+    float lastPressureAvg = getLastPressureSamplesAverage();
+    float change = (lastPressureAvg - pressureAvg) * CONVERSION_FACTOR;
+    if (firstRound) //first time initial 3 hour
+    {
+      dP_dt = change; //note this is for t = 1 hour
+    }
+    else
+    {
+      dP_dt = change / 2; //divide by 2 as this is the difference in time from 0 value
+    }
+  }
+  else if (minuteCount == 95)
+  {
+    float lastPressureAvg = getLastPressureSamplesAverage();
+    float change = (lastPressureAvg - pressureAvg) * CONVERSION_FACTOR;
+    if (firstRound) // first time initial 3 hour
+    {
+      dP_dt = change / 1.5; // note this is for t = 1.5 hour
+    }
+    else
+    {
+      dP_dt = change / 2.5; // divide by 2.5 as this is the difference in time from 0 value
+    }
+  }
+  else if (minuteCount == 125)
+  {
+    float lastPressureAvg = getLastPressureSamplesAverage();
+    pressureAvg2 = lastPressureAvg; // store for later use.
+    float change = (lastPressureAvg - pressureAvg) * CONVERSION_FACTOR;
+    if (firstRound) // first time initial 3 hour
+    {
+      dP_dt = change / 2; // note this is for t = 2 hour
+    }
+    else
+    {
+      dP_dt = change / 3; // divide by 3 as this is the difference in time from 0 value
+    }
+  }
+  else if (minuteCount == 155)
+  {
+    float lastPressureAvg = getLastPressureSamplesAverage();
+    float change = (lastPressureAvg - pressureAvg) * CONVERSION_FACTOR;
+    if (firstRound) // first time initial 3 hour
+    {
+      dP_dt = change / 2.5; // note this is for t = 2.5 hour
+    }
+    else
+    {
+      dP_dt = change / 3.5; // divide by 3.5 as this is the difference in time from 0 value
+    }
+  }
+  else if (minuteCount == 185)
+  {
+    float lastPressureAvg = getLastPressureSamplesAverage();
+    float change = (lastPressureAvg - pressureAvg) * CONVERSION_FACTOR;
+    if (firstRound) // first time initial 3 hour
+    {
+      dP_dt = change / 3; // note this is for t = 3 hour
+    }
+    else
+    {
+      dP_dt = change / 4; // divide by 4 as this is the difference in time from 0 value
+    }
+    pressureAvg = pressureAvg2; // Equating the pressure at 0 to the pressure at 2 hour after 3 hours have past.
+    firstRound = false; // flag to let you know that this is on the past 3 hour mark. Initialized to 0 outside main loop.
+  }
+
+  int forecast = UNKNOWN;
+  if (minuteCount < 35 && firstRound) //if time is less than 35 min on the first 3 hour interval.
+  {
+    forecast = UNKNOWN;
+  }
+  else if (dP_dt < (-0.25))
+  {
+    forecast = THUNDERSTORM;
+  }
+  else if (dP_dt > 0.25)
+  {
+    forecast = UNSTABLE;
+  }
+  else if ((dP_dt > (-0.25)) && (dP_dt < (-0.05)))
+  {
+    forecast = CLOUDY;
+  }
+  else if ((dP_dt > 0.05) && (dP_dt < 0.25))
+  {
+    forecast = SUNNY;
+  }
+  else if ((dP_dt >(-0.05)) && (dP_dt < 0.05))
+  {
+    forecast = STABLE;
+  }
+  else
+  {
+    forecast = UNKNOWN;
+  }
+
+  // uncomment when debugging
+  //Serial.print(F("Forecast at minute "));
+  //Serial.print(minuteCount);
+  //Serial.print(F(" dP/dt = "));
+  //Serial.print(dP_dt);
+  //Serial.print(F("kPa/h --> "));
+  //Serial.println(weather[forecast]);
+
+  return forecast;
 }
 
